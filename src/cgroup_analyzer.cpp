@@ -2,117 +2,131 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <iostream>
+#include <cstring>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
 namespace cgroup {
 
-const std::string CGROUP_BASE = "/sys/fs/cgroup";
+static const std::string BASE = "/sys/fs/cgroup";
 
-static bool write_file(const fs::path &path, const std::string &value) {
-    std::ofstream f(path);
-    if (!f.is_open()) return false;
-    f << value;
-    return true;
-}
+bool create(const std::string &name, std::string &out_path, std::string &err) {
+    out_path = BASE + "/" + name;
 
-static bool read_file(const fs::path &path, uint64_t &out) {
-    std::ifstream f(path);
-    if (!f.is_open()) return false;
-    f >> out;
-    return true;
-}
-
-bool create_cgroup(const std::string &cg) {
-    fs::path p = fs::path(CGROUP_BASE) / cg;
-    if (fs::exists(p)) return true;
-
-    return fs::create_directory(p);
-}
-
-bool move_process(const std::string &cg, int pid) {
-    fs::path tasks = fs::path(CGROUP_BASE) / cg / "cgroup.procs";
-    return write_file(tasks, std::to_string(pid));
-}
-
-bool set_cpu_limit(const std::string &cg, int percent) {
-    fs::path cpu_path = fs::path(CGROUP_BASE) / cg / "cpu.max";
-
-    if (percent <= 0) {
-        return write_file(cpu_path, "max");
+    try {
+        if (!fs::exists(out_path))
+            fs::create_directory(out_path);
+    } catch (const fs::filesystem_error &e) {
+        err = e.what();
+        return false;
     }
-
-    uint64_t period = 100000; // 100ms
-    uint64_t quota = (period * percent) / 100;
-
-    std::stringstream ss;
-    ss << quota << " " << period;
-    return write_file(cpu_path, ss.str());
+    return true;
 }
 
-bool set_memory_limit(const std::string &cg, uint64_t bytes) {
-    fs::path mem_path = fs::path(CGROUP_BASE) / cg / "memory.max";
-    return write_file(mem_path, std::to_string(bytes));
+bool move_pid(const std::string &cg_path, int pid, std::string &err) {
+    std::string file = cg_path + "/cgroup.procs";
+    std::ofstream f(file);
+    if (!f) { err = strerror(errno); return false; }
+    f << pid;
+    return true;
 }
 
-bool read_stats(const std::string &cg, cgroup_stats_t &stats) {
-    fs::path base = fs::path(CGROUP_BASE) / cg;
+// CPU.max works with: "max" or "<quota> <period>"
+bool set_cpu_limit(const std::string &cg_path, int percent, std::string &err) {
+    std::string file = cg_path + "/cpu.max";
+    std::ofstream f(file);
+    if (!f) { err = strerror(errno); return false; }
 
-    // CPU
-    read_file(base / "cpu.stat", stats.cpu_usage); // usage_usec in v2
+    long period = 100000;                    // 100ms
+    long quota  = (period * percent) / 100;  // percentage
 
-    // CPU limit
+    f << quota << " " << period;
+    return true;
+}
+
+bool set_mem_limit(const std::string &cg_path, uint64_t bytes, std::string &err) {
+    std::string file = cg_path + "/memory.max";
+    std::ofstream f(file);
+    if (!f) { err = strerror(errno); return false; }
+
+    f << bytes;
+    return true;
+}
+
+// Read CPU, memory, IO, PID count
+bool read_metrics(const std::string &cg_path, Metrics &m, std::string &err) {
+    auto read_long = [&](const std::string &path, long &out) {
+        std::ifstream f(path);
+        if (!f) return false;
+        f >> out;
+        return true;
+    };
+
+    // CPU stat
     {
-        std::ifstream f(base / "cpu.max");
-        if (f.is_open()) {
-            std::string quota, period;
-            f >> quota >> period;
+        std::ifstream f(cg_path + "/cpu.stat");
+        if (!f) { err = "Failed to read cpu.stat"; return false; }
 
-            if (quota == "max") stats.cpu_limit = 0;
-            else stats.cpu_limit = std::stoull(quota);
+        std::string key;
+        long value;
+
+        while (f >> key >> value) {
+            if (key == "usage_usec") m.cpu_usec = value;
+            if (key == "user_usec")  m.cpu_user_usec = value;
+            if (key == "system_usec") m.cpu_system_usec = value;
         }
     }
 
-    // Memory
-    read_file(base / "memory.current", stats.memory_current);
-    read_file(base / "memory.max", stats.memory_max);
+    read_long(cg_path + "/memory.current",  m.mem_current);
+    read_long(cg_path + "/memory.max",      m.mem_max);
 
-    // IO (blkio)
+    // I/O stat (cgroup v2 unified IO)
     {
-        std::ifstream f(base / "io.stat");
-        if (f.is_open()) {
-            std::string dev, key;
-            uint64_t val;
+        std::ifstream f(cg_path + "/io.stat");
+        m.io_read = 0;
+        m.io_write = 0;
 
-            while (f >> dev >> key >> val) {
-                if (key == "rbytes") stats.io_read += val;
-                if (key == "wbytes") stats.io_write += val;
+        if (f) {
+            std::string line;
+            while (std::getline(f, line)) {
+                if (line.find("rbytes=") != std::string::npos) {
+                    auto pos = line.find("rbytes=");
+                    m.io_read = std::stol(line.substr(pos + 7));
+                }
+                if (line.find("wbytes=") != std::string::npos) {
+                    auto pos = line.find("wbytes=");
+                    m.io_write = std::stol(line.substr(pos + 7));
+                }
             }
         }
     }
 
+    // PIDs
+    {
+        std::ifstream f(cg_path + "/pids.current");
+        if (f) f >> m.pids;
+    }
+
     return true;
 }
 
-std::string generate_report(const std::string &cg) {
-    cgroup_stats_t st;
-    read_stats(cg, st);
+bool generate_report(const std::string &cg_path, const Metrics &m, std::string &out) {
+    std::ostringstream ss;
 
-    std::stringstream out;
+    ss << "===== CGROUP REPORT =====\n";
+    ss << "Path: " << cg_path << "\n";
+    ss << "CPU total    : " << m.cpu_usec << " usec\n";
+    ss << "CPU user     : " << m.cpu_user_usec << " usec\n";
+    ss << "CPU system   : " << m.cpu_system_usec << " usec\n";
+    ss << "Memory curr  : " << m.mem_current << " bytes\n";
+    ss << "Memory max   : " << m.mem_max << " bytes\n";
+    ss << "I/O read     : " << m.io_read << " bytes\n";
+    ss << "I/O write    : " << m.io_write << " bytes\n";
+    ss << "PIDs         : " << m.pids << "\n";
 
-    out << "=== Cgroup Report: " << cg << " ===\n";
-
-    out << "CPU Usage (ns): " << st.cpu_usage << "\n";
-    out << "CPU Limit (quota): " << st.cpu_limit << "\n\n";
-
-    out << "Memory Current: " << st.memory_current / 1024 << " KB\n";
-    out << "Memory Max: " << st.memory_max / 1024 << " KB\n\n";
-
-    out << "IO Read: " << st.io_read << " bytes\n";
-    out << "IO Write: " << st.io_write << " bytes\n";
-
-    return out.str();
+    out = ss.str();
+    return true;
 }
 
-}
+} // namespace cgroup
