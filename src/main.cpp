@@ -1,51 +1,24 @@
+#include "../include/cgroup.h"
 #include <iostream>
-#include <thread>
-#include <chrono>
-#include "../include/monitor.h"
+#include <unistd.h>
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <pid>\n";
-        return 1;
-    }
+int main() {
+    std::string cg = "testgroup";
 
-    int pid = std::stoi(argv[1]);
+    std::cout << "Creating cgroup...\n";
+    cgroup::create_cgroup(cg);
 
-    std::cout << "Monitoring PID " << pid << "...\n";
+    std::cout << "Moving self to cgroup...\n";
+    cgroup::move_process(cg, getpid());
 
-    process_stats_t prev{};
-    process_stats_t curr{};
+    std::cout << "Applying CPU limit 20%...\n";
+    cgroup::set_cpu_limit(cg, 20);
 
-    bool has_prev = false;
+    std::cout << "Applying memory limit 200MB...\n";
+    cgroup::set_memory_limit(cg, 200ull * 1024 * 1024);
 
-    while (true) {
-        if (monitor_collect(pid, &curr) != 0) {
-            std::cerr << "Failed to read stats for PID " << pid << "\n";
-            return 1;
-        }
-
-        std::cout << "-----------------------------\n";
-        std::cout << "CPU%: " << curr.cpu_percent << "\n";
-        std::cout << "Memory RSS: " << curr.rss / 1024 << " KB\n";
-        std::cout << "Memory VSZ: " << curr.vsz / 1024 << " KB\n";
-        std::cout << "IO Read bytes: " << curr.read_bytes << "\n";
-        std::cout << "IO Write bytes: " << curr.write_bytes << "\n";
-
-        if (has_prev) {
-            double dt = 1.0; // 1 second loop
-
-            double read_rate  = (curr.read_bytes  - prev.read_bytes)  / dt;
-            double write_rate = (curr.write_bytes - prev.write_bytes) / dt;
-
-            std::cout << "IO Read/s: " << read_rate << "\n";
-            std::cout << "IO Write/s: " << write_rate << "\n";
-        }
-
-        prev = curr;
-        has_prev = true;
-
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    std::cout << "\nReading stats...\n";
+    std::cout << cgroup::generate_report(cg) << "\n";
 
     return 0;
 }
