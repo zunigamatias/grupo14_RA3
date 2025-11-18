@@ -42,3 +42,5 @@
 
 
 .env
+*.csv
+*.json

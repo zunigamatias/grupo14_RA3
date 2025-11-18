@@ -2,6 +2,9 @@
 #define MONITOR_H
 
 #include <cstdint>
+#include <string>      
+#include <vector>     
+
 
 struct process_stats_t {
     // CPU
@@ -36,5 +39,9 @@ bool network_collect_stats(int pid, process_stats_t *stats);
 
 /* Combined monitor */
 int monitor_collect(int pid, process_stats_t *stats);
+
+bool export_to_json(const std::vector<process_stats_t>& data, int pid, const std::string& filename);
+bool export_to_csv(const std::vector<process_stats_t>& data, int pid, const std::string& filename);
+int monitor_process_with_export(int pid, int duration_seconds, int interval_ms, const std::string& output_format = "json");
 
 #endif
