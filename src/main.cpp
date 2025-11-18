@@ -1163,6 +1163,20 @@ void experiment_4_memory_limitation() {
 }
 
 
+// Helper function to sanitize cgroup names
+std::string sanitize_cgroup_name(const std::string& name) {
+    std::string sanitized = name;
+    
+    // Replace invalid characters with underscore
+    const std::string invalid_chars = " /-\\:*?\"<>|";
+    for (char c : invalid_chars) {
+        std::replace(sanitized.begin(), sanitized.end(), c, '_');
+    }
+    
+    return sanitized;
+}
+
+
 void experiment_5_io_limitation() {
     std::cout << "\n" << std::string(70, '=') << "\n";
     std::cout << "EXPERIMENT 5: I/O LIMITATION\n";
@@ -1342,9 +1356,7 @@ void experiment_5_io_limitation() {
     for (const auto& scenario : scenarios) {
         // Create cgroup for this test
         std::string cg_path, err;
-        std::string cg_name = "io_test_" + scenario.name;
-        std::replace(cg_name.begin(), cg_name.end(), ' ', '_');
-        std::replace(cg_name.begin(), cg_name.end(), '-', '_');
+        std::string cg_name = "io_test_" + sanitize_cgroup_name(scenario.name);
         
         if (!cgroup::create(cg_name, cg_path, err)) {
             std::cerr << "Failed to create cgroup: " << err << "\n";
